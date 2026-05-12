@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>日記時光機 - 解決儲存問題版</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+    :root { --primary-color: #e8784a; --bg-color: #fdf6f0; }
+    *{ margin:0; padding:0; box-sizing:border-box; font-family:-apple-system,'Noto Sans TC',system-ui; }
+    body{ background: var(--bg-color); height:100vh; overflow:hidden; }
+    #app{ max-width:480px; margin:0 auto; height:100vh; display:flex; flex-direction:column; }
+    .btn-main{ width:100%; border:none; background: var(--primary-color); color:white; padding:15px; border-radius:18px; font-size:16px; font-weight:700; cursor:pointer; }
+    .home-header{ background:linear-gradient(135deg, var(--primary-color), #c44a1e); color:white; padding:25px 20px; text-align:center; }
+    .ocr-import-btn{ margin-top:15px; width:100%; border:none; background:white; color:#c44a1e; border-radius:20px; padding:16px; font-size:17px; font-weight:800; cursor:pointer; box-shadow:0 4px 15px rgba(0,0,0,0.1); }
+    
+    .cal-nav { display:flex; align-items:center; justify-content:space-between; padding:20px; background:white; margin:10px 15px 0; border-radius:20px 20px 0 0; }
+    .nav-arrow { font-size:30px; color:var(--primary-color); cursor:pointer; padding:0 10px; }
+    .nav-title { font-size:20px; font-weight:800; color:#333; cursor:pointer; border-bottom: 2px dashed #ccc; }
+
+    .calendar-wrap{ flex:1; padding:0 15px 15px; overflow-y:auto; }
+    .cal-grid{ display:grid; grid-template-columns:repeat(7,1fr); gap:5px; background:white; padding:15px; border-radius:0 0 20px 20px; }
+    .cal-day{ aspect-ratio:1; display:flex; align-items:center; justify-content:center; background:#f9f9f9; border-radius:10px; font-size:14px; cursor:pointer; position:relative; }
+    .has-entry{ background:#fff0e8; color:var(--primary-color); font-weight:bold; }
+    
+    .modal-overlay { position:fixed; inset:0; background:rgba(0,0,0,0.7); display:none; align-items:center; justify-content:center; z-index:2000; padding:20px; }
+    .modal-box { background:white; width:100%; border-radius:24px; padding:24px; max-width:400px; }
+
+    #editorPage{ display:none; position:fixed; inset:0; background:white; z-index:100; flex-direction:column; }
+    #diaryEditor{ flex:1; padding:20px; outline:none; font-size:18px; line-height:1.6; overflow-y:auto; white-space: pre-wrap; }
+    #ocrLoading{ position:fixed; inset:0; background:rgba(0,0,0,0.85); color:white; display:none; flex-direction:column; align-items:center; justify-content:center; z-index:3000; }
+</style>
+</head>
+<body>
+
+<div id="app">
+    <div id="mainApp">
+        <div class="home-header">
+            <h1 style="font-size:24px;">日記時光機</h1>
+            <button class="ocr-import-btn" onclick="triggerCamera()">📸 拍照匯入舊日記</button>
+        </div>
+        
+        <div class="cal-nav">
+            <div class="nav-arrow" onclick="changeMonth(-1)">‹</div>
+            <div class="nav-title" onclick="showJumpModal()">
+                <span id="vYear">2026</span>年 <span id="vMonth">5</span>月
+            </div>
+            <div class="nav-arrow" onclick="changeMonth(1)">›</div>
+        </div>
+        <div class="calendar-wrap"><div id="calGrid" class="cal-grid"></div></div>
+    </div>
+
+    <div id="editorPage">
+        <div style="padding:15px; display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #eee;">
+            <button onclick="closeEditor()" style="background:none; border:none; font-size:24px; color:var(--primary-color);">✕</button>
+            <b id="editingDateTitle"></b>
+            <button onclick="saveEntry()" style="color:white; background:var(--primary-color); padding:8px 20px; border-radius:12px; border:none; font-weight:bold;">儲存日記</button>
+        </div>
+        <div id="diaryEditor" contenteditable="true"></div>
+    </div>
+
+    <div id="ocrConfirmModal" class="modal-overlay">
+        <div class="modal-box">
+            <h3>📅 確認日期與歸檔</h3>
+            <input type="date" id="ocrFinalDate" style="width:100%; padding:12px; margin:15px 0; border:1px solid #ddd; border-radius:10px; font-size:18px;">
+            <div style="display:flex; gap:10px;">
+                <button class="btn-main" style="background:#eee; color:#333;" onclick="hideModal('ocrConfirmModal')">取消</button>
+                <button class="btn-main" onclick="confirmOCRArchive()">併入日記內容</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="jumpModal" class="modal-overlay">
+        <div class="modal-box">
+            <h3>🚀 快速跳轉</h3>
+            <div style="display:flex; gap:10px; margin:15px 0;"><select id="jumpYearSelect" style="flex:2; padding:10px;"></select><select id="jumpMonthSelect" style="flex:1; padding:10px;"></select></div>
+            <button class="btn-main" onclick="executeJump()">立刻跳轉</button>
+        </div>
+    </div>
+
+    <input type="file" id="cameraInput" accept="image/*" capture="environment" style="display:none" onchange="handleOCR(this)">
+    <div id="ocrLoading">🔎 正在處理日記內容...</div>
+</div>
+
+<script>
+const SUPABASE_URL = "https://rsuguwhgzyyvhlehpqqu.supabase.co";
+const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJzdWd1d2hnenl5dmhsZWhwcXF1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc5ODU4NDUsImV4cCI6MjA5MzU2MTg0NX0.SX9ixJYye0GNdKvcJ5c3FZAeN9s1B_oX7XnU8xwbkR8";
+const GOOGLE_KEY = "在此貼上你的API_KEY"; 
+
+const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
+let currentUser = null, entries = {}, currentYear = 2026, currentMonth = 5, tempOCRText = "", editingDate = "", lastArchiveDate = "";
+
+async function boot(){
+    const { data:{ user } } = await sb.auth.getUser();
+    if(user) { currentUser = user; await loadEntries(); renderCalendar(); initJumpOptions(); }
+}
+window.onload = boot;
+
+async function loadEntries(){
+    const { data } = await sb.from('diary_entries').select('date, content_html').eq('user_id', currentUser.id);
+    entries = {}; (data || []).forEach(e => { entries[e.date] = e; });
+}
+
+function renderCalendar(){
+    document.getElementById('vYear').innerText = currentYear;
+    document.getElementById('vMonth').innerText = currentMonth;
+    const grid = document.getElementById('calGrid'); grid.innerHTML = '';
+    let first = new Date(currentYear, currentMonth - 1, 1).getDay();
+    let total = new Date(currentYear, currentMonth, 0).getDate();
+    for(let i=0; i<first; i++) grid.innerHTML += `<div></div>`;
+    for(let d=1; d<=total; d++){
+        let key = `${currentYear}-${String(currentMonth).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+        grid.innerHTML += `<div class="cal-day ${entries[key]?'has-entry':''}" onclick="openEditor('${key}')">${d}</div>`;
+    }
+}
+
+function changeMonth(delta){ currentMonth += delta; if(currentMonth>12){currentMonth=1;currentYear++;} if(currentMonth<1){currentMonth=12;currentYear--;} renderCalendar(); }
+function initJumpOptions(){
+    const ySel = document.getElementById('jumpYearSelect'), mSel = document.getElementById('jumpMonthSelect');
+    for(let y=2026; y>=1980; y--) ySel.innerHTML += `<option value="${y}">${y}年</option>`;
+    for(let m=1; m<=12; m++) mSel.innerHTML += `<option value="${m}">${m}月</option>`;
+}
+function showJumpModal(){ document.getElementById('jumpModal').style.display = 'flex'; }
+function executeJump(){ currentYear = parseInt(document.getElementById('jumpYearSelect').value); currentMonth = parseInt(document.getElementById('jumpMonthSelect').value); hideModal('jumpModal'); renderCalendar(); }
+function triggerCamera() { document.getElementById('cameraInput').click(); }
+
+async function handleOCR(input){
+    if(!input.files[0]) return;
+    document.getElementById('ocrLoading').style.display = 'flex';
+    let reader = new FileReader();
+    reader.onload = async (e) => {
+        const base64 = e.target.result.split(',')[1];
+        try {
+            const res = await fetch(`https://vision.googleapis.com/v1/images:annotate?key=${GOOGLE_KEY}`, {
+                method: 'POST',
+                body: JSON.stringify({ requests: [{ image: { content: base64 }, features: [{ type: 'TEXT_DETECTION' }] }] })
+            });
+            const data = await res.json();
+            const text = data.responses?.[0]?.fullTextAnnotation?.text || "";
+            tempOCRText = text;
+            let detected = findSmartDate(text) || lastArchiveDate;
+            document.getElementById('ocrFinalDate').value = detected || "";
+            document.getElementById('ocrLoading').style.display = 'none';
+            document.getElementById('ocrConfirmModal').style.display = 'flex';
+        } catch(err) { alert("OCR 失敗"); document.getElementById('ocrLoading').style.display = 'none'; }
+    };
+    reader.readAsDataURL(input.files[0]);
+}
+
+function findSmartDate(text){
+    const clean = text.replace(/\s+/g, '');
+    let m = clean.match(/(\d{4})年(\d{1,2})月(\d{1,2})日/);
+    if(m) return `${m[1]}-${String(m[2]).padStart(2,'0')}-${String(m[3]).padStart(2,'0')}`;
+    let m2 = clean.match(/(\d{4})[\/\.\-](\d{1,2})[\/\.\-](\d{1,2})/);
+    if(m2) return `${m2[1]}-${String(m2[2]).padStart(2,'0')}-${String(m2[3]).padStart(2,'0')}`;
+    return null;
+}
+
+function confirmOCRArchive(){
+    const targetDate = document.getElementById('ocrFinalDate').value;
+    if(!targetDate) return alert("請確認日期！");
+    lastArchiveDate = targetDate;
+    const parts = targetDate.split('-');
+    currentYear = parseInt(parts[0]); currentMonth = parseInt(parts[1]);
+    
+    let newContent = tempOCRText.replace(/\n/g, '<br>');
+    let oldContent = entries[targetDate]?.content_html || "";
+    let finalContent = oldContent.trim() !== "" ? oldContent + "<br><hr style='border:1px dashed #ccc; margin:15px 0;'><br>" + newContent : newContent;
+    
+    openEditor(targetDate, finalContent);
+    hideModal('ocrConfirmModal');
+}
+
+function hideModal(id){ document.getElementById(id).style.display = 'none'; }
+function openEditor(date, content = null){
+    editingDate = date; // 這裡很重要，鎖定要存檔的日期
+    document.getElementById('editingDateTitle').innerText = date;
+    document.getElementById('diaryEditor').innerHTML = content || entries[date]?.content_html || '';
+    document.getElementById('mainApp').style.display = 'none';
+    document.getElementById('editorPage').style.display = 'flex';
+}
+function closeEditor(){ document.getElementById('editorPage').style.display = 'none'; document.getElementById('mainApp').style.display = 'flex'; renderCalendar(); }
+
+async function saveEntry(){
+    if(!currentUser) return alert("尚未登入");
+    const content = document.getElementById('diaryEditor').innerHTML;
+    
+    // 強化的 upsert 邏輯：明確指定比對欄位是 user_id 和 date
+    const { error } = await sb.from('diary_entries').upsert(
+        { user_id: currentUser.id, date: editingDate, content_html: content },
+        { onConflict: 'user_id,date' } 
+    );
+
+    if(error) {
+        alert("儲存失敗！\n錯誤代碼：" + error.code + "\n訊息：" + error.message);
+        console.error(error);
+    } else {
+        await loadEntries();
+        alert('✅ 日記已合併儲存成功！');
+        closeEditor();
+    }
+}
+</script>
+</body>
+</html>
